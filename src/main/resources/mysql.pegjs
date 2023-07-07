@@ -420,6 +420,10 @@ cmd_stmt
   / unlock_stmt
   / show_stmt
   / desc_stmt
+  / savepoint_stmt
+  / rollback_stmt
+  / grant_stmt
+  / load_data_stmt
 
 create_stmt
   = create_table_stmt
@@ -427,9 +431,17 @@ create_stmt
   / create_index_stmt
   / create_db_stmt
   / create_view_stmt
+  / create_procedure_stmt
+  / create_aggregate_stmt
+  / create_user_stmt
+  / create_role_stmt
+ 
+ 
 
 alter_stmt
   = alter_table_stmt
+  / alter_view_stmt
+  / alter_user_stmt
 
 crud_stmt
   = set_op_stmt
@@ -507,6 +519,57 @@ if_not_exists_stmt
   = 'IF'i __ KW_NOT __ KW_EXISTS {
     return 'IF NOT EXISTS'
   }
+
+savepoint_stmt
+  = KW_SAVEPOINT __
+    ident __
+    
+rollback_stmt
+ = KW_ROLLBACK __
+   KW_WORK? __
+   KW_TO? __
+   savepoint_stmt? __
+   
+grant_stmt
+ = KW_GRANT __
+   column_list_role? __
+   KW_TO __
+   column_list_role? __
+  / KW_GRANT __
+   (KW_SELECT / KW_INSERT / KW_UPDATE / KW_DELETE) __
+    KW_ON __
+    (KW_TABLE / KW_FUNCTION / KW_PROCEDURE / KW_SCHEMA) __
+    column_list? __
+    KW_TO __
+    ident __
+  / KW_GRANT __
+   (KW_SELECT / KW_INSERT / KW_UPDATE / KW_DELETE / KW_ALL) __
+    KW_ON __
+   (ident? __ DOT? __ STAR?)
+    table_name? __
+    KW_TO __
+    ident __
+      
+column_list_role
+ = head:ident tail:(__ COMMA __ ident __ )* {
+      return createList(head, tail);
+    } 
+    
+load_data_stmt
+ = KW_LOAD __
+   KW_DATA __
+   from_clause? __
+   KW_COLUMNS? __
+   (LPAREN __ column_list_load __ RPAREN)? __
+    KW_INTO __
+   table_name __
+   (LPAREN __ column_list __ RPAREN)? __
+   value_clause? __
+    
+column_list_load
+= head:aggregate_parameter tail:(__ COMMA __ aggregate_parameter __ )* {
+      return createList(head, tail);
+    } 
 
 create_db_stmt
   = a:KW_CREATE __
@@ -644,7 +707,60 @@ create_table_stmt
         }
       }
     }
+    
+create_user_stmt    
+ = KW_CREATE __
+   KW_USER __
+   ident __
+   auth_option? __
+   ident __
+ 
+create_role_stmt  
+= KW_CREATE __ 
+    KW_ROLE __
+    ident __  
 
+create_procedure_stmt
+ = KW_CREATE __ 
+  (KW_OR __ KW_REPLACE)? __
+  (KW_PROCEDURE / KW_PROC) __
+   proc_func_name __
+   (LPAREN __  column_list_proc? __ RPAREN)? __ 
+   (KW_FOR __ table_name)? __
+   KW_BEGIN __ 
+   (crud_stmt / select_stmt) __ SEMICOLON __
+   KW_END __
+  
+create_aggregate_stmt 
+ = KW_CREATE __
+  (KW_OR __ KW_REPLACE)? __
+   KW_AGGREGATE __
+   proc_func_name __
+   (LPAREN __  aggregate_parameter? __ RPAREN)? __
+   (KW_RETURNS __ data_type)? __
+   KW_ITERATE __ KW_WITH __ proc_func_name __
+   aggregate_optional? __ 
+   
+ 
+aggregate_optional
+= ("INITIALIZE"i / "MERGE"i / "FINALIZE"i) __ KW_WITH __ proc_func_name __
+   
+column_list_proc
+  = head:proc_parameter tail:(__ COMMA __ proc_parameter __ )* {
+      return createList(head, tail);
+    } 
+    
+aggregate_parameter
+= __ ident __ data_type __
+
+
+
+proc_parameter
+ = (KW_IN / KW_OUT / KW_INOUT) __ ident __ data_type __ default_expr? __
+ 
+ 
+auth_option
+= (KW_IDENTIFIED / KW_IDENTIFY) __ KW_BY __
 
 create_like_table_simple
   = KW_LIKE __ t: table_ref_list {
@@ -921,7 +1037,8 @@ drop_stmt
   / a:KW_DROP __
     r:KW_TRIGGER __
     ife:if_exists? __
-    t:table_base {
+    t:table_base 
+    (KW_FROM __ table_base)?__ {
       return {
         tableList: Array.from(tableList),
         columnList: columnListTableAlias(columnList),
@@ -936,6 +1053,19 @@ drop_stmt
         }
       };
     }
+  / KW_DROP __
+    ( KW_USER / KW_ROLE ) __
+    ident __
+  / KW_DROP __
+   (KW_PROCEDURE / KW_FUNCTION / KW_PROC) __
+   if_exists? __
+   ident __
+   (KW_FROM __ table_name)? __
+  / KW_DROP __
+    KW_AGGREGATE __
+   if_exists? __
+   proc_func_name __
+   
 
 truncate_stmt
   = a:KW_TRUNCATE  __
@@ -983,6 +1113,22 @@ alter_table_stmt
         }
       };
     }
+    
+alter_user_stmt    
+  = KW_ALTER __
+     KW_USER __
+     ident __
+     auth_option? __
+     ident __
+     
+alter_view_stmt     
+  = KW_ALTER __
+    KW_VIEW __ 
+    ident __ 
+    (LPAREN __ column_list __ RPAREN)? __
+    KW_AS __
+    select_stmt_nake __
+    view_with? __
 
 alter_action_list
   = head:alter_action tail:(__ COMMA __ alter_action)* {
@@ -2031,6 +2177,8 @@ join_op
   / KW_FULL __ KW_OUTER? __ KW_JOIN { return 'FULL JOIN'; }
   / KW_CROSS __ KW_JOIN { return 'CROSS JOIN'; }
   / (KW_INNER __)? KW_JOIN { return 'INNER JOIN'; }
+  / KW_NATURAL __ KW_INNER?__ KW_JOIN
+  / KW_NATURAL __ (KW_LEFT / KW_RIGHT) __ KW_OUTER? __ KW_JOIN
 
 table_name
   = dt:ident tail:(__ DOT __ ident)? {
@@ -2110,6 +2258,7 @@ update_stmt
     t:table_ref_list __
     KW_SET       __
     l:set_list   __
+    from_clause? __
     w:where_clause? __
     or:order_by_clause? __
     lc:limit_clause? {
@@ -2147,7 +2296,7 @@ update_stmt
 delete_stmt
   = __ cte:with_clause? __ KW_DELETE    __
     t:table_ref_list? __
-    f:from_clause __
+    f:from_clause? __
     w:where_clause? __
     or:order_by_clause? __
     l:limit_clause? {
@@ -3241,7 +3390,11 @@ KW_TRUE     = "TRUE"i       !ident_start
 KW_TO       = "TO"i         !ident_start
 KW_FALSE    = "FALSE"i      !ident_start
 
+KW_IDENTIFIED = "IDENTIFIED"i !ident_start
+KW_IDENTIFY   = "IDENTIFY"i  !ident_start
+
 KW_SHOW     = "SHOW"i       !ident_start
+KW_BEGIN     = "BEGIN"i       !ident_start
 KW_DROP     = "DROP"i       !ident_start { return 'DROP'; }
 KW_USE      = "USE"i        !ident_start
 KW_ALTER    = "ALTER"i      !ident_start
@@ -3263,6 +3416,7 @@ KW_FROM     = "FROM"i       !ident_start
 KW_SET      = "SET"i        !ident_start
 KW_UNLOCK   = "UNLOCK"i     !ident_start
 KW_LOCK     = "LOCK"i       !ident_start
+KW_FOR      = "FOR"i        !ident_start
 
 KW_AS       = "AS"i         !ident_start
 KW_TABLE    = "TABLE"i      !ident_start { return 'TABLE'; }
@@ -3271,6 +3425,12 @@ KW_TABLES    = "TABLES"i      !ident_start { return 'TABLES'; }
 KW_DATABASE = "DATABASE"i      !ident_start { return 'DATABASE'; }
 KW_SCHEMA   = "SCHEMA"i      !ident_start { return 'SCHEMA'; }
 KW_COLLATE  = "COLLATE"i    !ident_start { return 'COLLATE'; }
+KW_PROCEDURE = "PROCEDURE"i !ident_start
+KW_PROC      = "PROC"i      !ident_start
+KW_FUNCTION  = "FUNCTION"i  !ident_start
+KW_AGGREGATE = "AGGREGATE"i !ident_start
+KW_SAVEPOINT  = "SAVEPOINT"i    !ident_start { return 'SAVEPOINT'; }
+KW_ROLLBACK   = "ROLLBACK"i     !ident_start
 
 KW_ON       = "ON"i       !ident_start
 KW_LEFT     = "LEFT"i     !ident_start
@@ -3280,12 +3440,15 @@ KW_INNER    = "INNER"i    !ident_start
 KW_CROSS    = "CROSS"i    !ident_start
 KW_JOIN     = "JOIN"i     !ident_start
 KW_OUTER    = "OUTER"i    !ident_start
+KW_NATURAL  = "NATURAL"i  !ident_start
 KW_OVER     = "OVER"i     !ident_start
 KW_UNION    = "UNION"i    !ident_start
 KW_MINUS    = "MINUS"i    !ident_start
 KW_INTERSECT    = "INTERSECT"i    !ident_start
 KW_VALUES   = "VALUES"i   !ident_start
 KW_USING    = "USING"i    !ident_start
+KW_RETURNS  = "RETURNS"i  !ident_start
+KW_ITERATE  = "ITERATE"i  !ident_start
 
 KW_WHERE    = "WHERE"i      !ident_start
 KW_WITH     = "WITH"i       !ident_start
@@ -3306,8 +3469,12 @@ KW_DESCRIBE = "DESCRIBE"i       !ident_start { return 'DESCRIBE'; }
 KW_ALL      = "ALL"i        !ident_start { return 'ALL'; }
 KW_DISTINCT = "DISTINCT"i   !ident_start { return 'DISTINCT';}
 
+KW_WORK     = "WORK"i      !ident_start
+
 KW_BETWEEN  = "BETWEEN"i    !ident_start { return 'BETWEEN'; }
 KW_IN       = "IN"i         !ident_start { return 'IN'; }
+KW_OUT      = "OUT"i        !ident_start
+KW_INOUT    = "INOUT"i      !ident_start
 KW_IS       = "IS"i         !ident_start { return 'IS'; }
 KW_LIKE     = "LIKE"i       !ident_start { return 'LIKE'; }
 KW_RLIKE    = "RLIKE"i      !ident_start { return 'RLIKE'; }
@@ -3327,6 +3494,11 @@ KW_AVG      = "AVG"i        !ident_start { return 'AVG'; }
 
 KW_EXTRACT  = "EXTRACT"i    !ident_start { return 'EXTRACT'; }
 KW_CALL     = "CALL"i       !ident_start { return 'CALL'; }
+KW_GRANT    = "GRANT"i      !ident_start
+KW_LOAD     = "LOAD"i       !ident_start
+KW_DATA     = "DATA"i       !ident_start
+
+KW_COLUMNS  = "COLUMNS"i  !ident_start
 
 KW_CASE     = "CASE"i       !ident_start
 KW_WHEN     = "WHEN"i       !ident_start
@@ -3368,6 +3540,7 @@ KW_TIMESTAMP = "TIMESTAMP"i !ident_start { return 'TIMESTAMP'; }
 KW_YEAR = "YEAR"i !ident_start { return 'YEAR'; }
 KW_TRUNCATE = "TRUNCATE"i !ident_start { return 'TRUNCATE'; }
 KW_USER     = "USER"i     !ident_start { return 'USER'; }
+KW_ROLE     = "ROLE"i     !ident_start
 
 KW_CURRENT_DATE     = "CURRENT_DATE"i !ident_start { return 'CURRENT_DATE'; }
 KW_ADD_DATE         = "ADDDATE"i !ident_start { return 'ADDDATE'; }
@@ -3444,6 +3617,9 @@ RPAREN    = ')'
 
 LBRAKE    = '['
 RBRAKE    = ']'
+
+LCURLY    = '{'
+RCURLY    = '}'
 
 SEMICOLON = ';'
 SINGLE_ARROW = '->'
